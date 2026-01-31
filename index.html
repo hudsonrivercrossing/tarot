@@ -3,6 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <meta name="tarot-build" content="2026-01-31-01">
     <title>Mystic Tarot | 神秘塔罗</title>
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -14,15 +18,33 @@
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
     <!-- Markdown Renderer -->
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/lib/marked.umd.js" crossorigin="anonymous"></script>
     
     <style>
         :root {
-            --card-width: 200px;
-            --card-height: 350px;
+            --card-width: clamp(120px, 20vw, 200px);
+            --card-height: calc(var(--card-width) * 1.75);
             --bg-dark: #050510;
             --accent-gold: #d4af37;
             --accent-glow: rgba(212, 175, 55, 0.6);
+        }
+
+        @media (max-width: 768px) and (orientation: portrait) {
+            :root {
+                --card-width: clamp(92px, 24vw, 150px);
+            }
+        }
+
+        @media (max-width: 480px) and (orientation: portrait) {
+            :root {
+                --card-width: clamp(86px, 26vw, 140px);
+            }
+        }
+
+        @media (orientation: landscape) and (max-height: 520px) {
+            :root {
+                --card-width: clamp(96px, 26vh, 140px);
+            }
         }
 
         /* Intro Animation Class - if needed, but we will use JS interpolation */
@@ -59,6 +81,38 @@
             background: linear-gradient(to top, rgba(10,10,30, 0.9), transparent);
             z-index: 1;
             pointer-events: none;
+        }
+
+        #asset-loader {
+            position: fixed;
+            inset: 0;
+            z-index: 2000;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            background: rgba(5, 5, 16, 0.92);
+            backdrop-filter: blur(6px);
+            pointer-events: auto;
+        }
+
+        #asset-progress-container {
+            width: min(320px, 80vw);
+            height: 8px;
+            background: rgba(255, 255, 255, 0.15);
+            border-radius: 999px;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 0 12px rgba(255, 255, 255, 0.08);
+        }
+
+        #asset-progress-bar {
+            width: 0%;
+            height: 100%;
+            background: linear-gradient(90deg, rgba(212, 175, 55, 0.7), rgba(240, 230, 140, 0.9));
+            box-shadow: 0 0 10px rgba(212, 175, 55, 0.35);
+            transition: width 0.15s linear;
         }
 
         /* Main Game Container */
@@ -466,8 +520,8 @@
         }
 
         .picked-slot {
-            width: 100px;
-            height: 175px;
+            width: calc(var(--card-width) * 0.5);
+            height: calc(var(--card-height) * 0.5);
             border: 2px dashed rgba(212, 175, 55, 0.3);
             border-radius: 8px;
             display: flex;
@@ -475,6 +529,13 @@
             justify-content: center;
             background: rgba(0,0,0,0.3);
             transition: all 0.5s;
+        }
+
+        @media (max-width: 480px) {
+            #picked-zone {
+                bottom: 20px;
+                gap: 12px;
+            }
         }
 
         .picked-slot.filled {
@@ -595,6 +656,15 @@
     <!-- Background Canvas -->
     <canvas id="stars-canvas"></canvas>
     <div id="fog-layer"></div>
+
+    <div id="asset-loader">
+        <div style="font-size: 1.25rem; color: var(--accent-gold); letter-spacing: 2px;">资源加载中 · v2026-01-31-01</div>
+        <div id="asset-progress-text" style="color: #ddd; font-size: 0.95rem;">0%</div>
+        <div id="asset-progress-container">
+            <div id="asset-progress-bar"></div>
+        </div>
+        <button id="asset-retry-btn" class="btn" style="display:none">重试加载</button>
+    </div>
 
     <!-- UI Layer -->
     <div id="ui-layer">
@@ -726,6 +796,94 @@
         const FULL_DECK = generateCards();
         let currentDeck = [];
         let pickedCards = []; // { card, reversed, position }
+        let assetsReady = false;
+        let assetsFailed = false;
+        let cameraReady = false;
+        let cameraError = false;
+
+        function setAssetProgress(progress, label) {
+            const pct = Math.max(0, Math.min(100, Math.round(progress)));
+            const text = document.getElementById('asset-progress-text');
+            const bar = document.getElementById('asset-progress-bar');
+            if (text) text.innerText = label ? `${label} ${pct}%` : `${pct}%`;
+            if (bar) bar.style.width = `${pct}%`;
+        }
+
+        function updateIdleStatus() {
+            if (currentState !== STATE.IDLE) return;
+            if (cameraError) return;
+            const status = document.getElementById('status-text');
+            if (!status) return;
+            if (assetsFailed) {
+                status.innerText = "资源加载失败，点击重试";
+                return;
+            }
+            if (!assetsReady) {
+                status.innerText = "资源加载中...";
+                return;
+            }
+            if (cameraReady) {
+                status.innerText = "张开你的五指开始";
+            }
+        }
+
+        function preloadDeckAssets() {
+            const loader = document.getElementById('asset-loader');
+            const retryBtn = document.getElementById('asset-retry-btn');
+            if (retryBtn) retryBtn.style.display = 'none';
+            if (loader) loader.style.display = 'flex';
+
+            assetsReady = false;
+            assetsFailed = false;
+            setAssetProgress(0);
+            updateIdleStatus();
+
+            const images = FULL_DECK.map(c => c.img).filter(Boolean);
+            const uniqueImages = Array.from(new Set(images));
+            const total = uniqueImages.length;
+            let doneCount = 0;
+            let failCount = 0;
+
+            if (total === 0) {
+                assetsReady = true;
+                if (loader) loader.style.display = 'none';
+                updateIdleStatus();
+                return;
+            }
+
+            uniqueImages.forEach((src) => {
+                const img = new Image();
+                img.decoding = 'async';
+                img.onload = () => {
+                    doneCount += 1;
+                    const progress = ((doneCount + failCount) / total) * 100;
+                    setAssetProgress(progress);
+                    if (doneCount + failCount === total) finish();
+                };
+                img.onerror = () => {
+                    failCount += 1;
+                    const progress = ((doneCount + failCount) / total) * 100;
+                    setAssetProgress(progress);
+                    if (doneCount + failCount === total) finish();
+                };
+                img.src = src;
+            });
+
+            function finish() {
+                if (failCount > 0) {
+                    assetsFailed = true;
+                    setAssetProgress(100, "加载失败");
+                    if (retryBtn) retryBtn.style.display = 'inline-block';
+                    if (retryBtn) retryBtn.onclick = () => preloadDeckAssets();
+                    updateIdleStatus();
+                    return;
+                }
+                assetsReady = true;
+                setAssetProgress(100, "加载完成");
+                if (loader) loader.style.display = 'none';
+                updateIdleStatus();
+            }
+        }
         
         // --- 2. Game State & Logic ---
         const STATE = {
@@ -861,7 +1019,14 @@
             // Responsive Layout Calculation
             // Base gap + factor of screen width
             // This ensures on wide screens cards are spread out more
-            const gap = Math.min(Math.max(220, width * 0.18), 400); 
+            const cardWidthVar = getComputedStyle(document.documentElement).getPropertyValue('--card-width').trim();
+            const cardWidthPx = parseFloat(cardWidthVar) || 200;
+            const compactMedia = window.matchMedia && window.matchMedia('(orientation: landscape) and (max-height: 520px)').matches;
+            const isMobile = width <= 480 || compactMedia;
+            const gap = Math.min(
+                Math.max(cardWidthPx * (isMobile ? 0.85 : 1.15), width * (isMobile ? 0.12 : 0.18)),
+                cardWidthPx * (isMobile ? 1.25 : 2)
+            );
             
             // Calculate how many cards to show based on screen width
             // Due to Z-depth, cards shrink, so we need more margin
@@ -898,7 +1063,9 @@
                 const isSelected = Math.round(currentIndex) === i;
                 
                 if (Math.abs(dist) < 0.5) {
-                    scale = 1.2 - Math.abs(dist) * 0.4;
+                    const selectedScaleBase = isMobile ? 1.06 : 1.2;
+                    const selectedScaleFalloff = isMobile ? 0.22 : 0.4;
+                    scale = selectedScaleBase - Math.abs(dist) * selectedScaleFalloff;
                     card.style.zIndex = 1000;
                 } else {
                     // Less aggressive scaling down for side cards
@@ -911,6 +1078,11 @@
                 } else {
                      card.classList.remove('selected');
                 }
+
+                if (isFistHeld && chargeTargetIndex !== null && i === chargeTargetIndex) {
+                    scale *= chargeExtraScale;
+                    card.style.zIndex = 2000;
+                }
                 
                 card.style.transform = `translateX(${x}px) translateZ(${z}px) rotateY(${rotateY}deg) scale(${scale})`;
             });
@@ -921,7 +1093,8 @@
             
             // Responsive spacing for picked cards
             const width = window.innerWidth;
-            const spread = Math.min(width * 0.3, 400); // Dynamic spread
+            const compactMedia = window.matchMedia && window.matchMedia('(orientation: landscape) and (max-height: 520px)').matches;
+            const spread = (width <= 480 || compactMedia) ? Math.min(width * 0.18, 180) : Math.min(width * 0.3, 400);
             
             const positions = [-spread, 0, spread];
             const labels = ["过去", "现在", "未来"];
@@ -972,6 +1145,9 @@
         // Selection State
         let fistHoldStart = 0;
         let isFistHeld = false;
+        let lockedSelectIndex = null;
+        let chargeTargetIndex = null;
+        let chargeExtraScale = 1;
         const SELECTION_HOLD_TIME = 1000; // 1 second as requested
 
         // Interpretation Gesture State
@@ -1204,7 +1380,7 @@
                         progressBar.style.width = '0%';
 
                         if (currentState === STATE.IDLE) {
-                             document.getElementById('status-text').innerText = "张开你的五指开始";
+                             updateIdleStatus();
                         } else {
                              document.getElementById('status-text').innerText = "张开你的五指，解读牌面";
                         }
@@ -1262,15 +1438,19 @@
                     // Start Holding
                     isFistHeld = true;
                     fistHoldStart = Date.now();
+                    lockedSelectIndex = Math.round(currentIndex);
+                    chargeTargetIndex = lockedSelectIndex;
+                    chargeExtraScale = 1;
                     highlightDirection('select');
                 }
                 
                 // Calculate Progress
                 const elapsed = Date.now() - fistHoldStart;
                 const progress = Math.min(elapsed / SELECTION_HOLD_TIME, 1.0);
+                chargeExtraScale = 1 + progress * 0.15;
                 
                 // Glow Effect on Target Card
-                const targetIdx = Math.round(currentIndex);
+                const targetIdx = lockedSelectIndex ?? Math.round(currentIndex);
                 const cards = document.querySelectorAll('.card-wrapper');
                 cards.forEach(card => {
                     if (parseInt(card.dataset.index) === targetIdx) {
@@ -1283,7 +1463,6 @@
                             0 0 ${glowSize * 0.5}px rgba(255, 255, 255, 1),
                             inset 0 0 30px rgba(255, 255, 255, 0.5)
                         `;
-                        card.style.transform += ` scale(${1.2 + progress * 0.15})`; // Slight swell
                         card.style.filter = `brightness(${1 + progress * 1.5})`; // Make it blindingly bright
                         card.style.zIndex = 2000; // Ensure on top
                         
@@ -1307,6 +1486,9 @@
                     // Reset
                     isFistHeld = false;
                     fistHoldStart = 0;
+                    lockedSelectIndex = null;
+                    chargeTargetIndex = null;
+                    chargeExtraScale = 1;
                     updateChargeVisuals(false);
                     
                     // Cleanup any remaining glow immediately on select (or keep it as feedback?)
@@ -1333,6 +1515,9 @@
                     // Cancelled
                     isFistHeld = false;
                     fistHoldStart = 0;
+                    lockedSelectIndex = null;
+                    chargeTargetIndex = null;
+                    chargeExtraScale = 1;
                     updateChargeVisuals(false);
                     resetHighlights();
                     
@@ -1370,23 +1555,28 @@
             }
             
             if (currentState === STATE.PICKING) {
-                // Apply Velocity
-                currentIndex += velocity;
-                
-                // Apply Friction
-                velocity *= FRICTION;
-                
-                // Stop if very slow
-                if (Math.abs(velocity) < 0.0001) velocity = 0;
+                if (isFistHeld && lockedSelectIndex !== null) {
+                    currentIndex = lockedSelectIndex;
+                    velocity = 0;
+                } else {
+                    // Apply Velocity
+                    currentIndex += velocity;
+                    
+                    // Apply Friction
+                    velocity *= FRICTION;
+                    
+                    // Stop if very slow
+                    if (Math.abs(velocity) < 0.0001) velocity = 0;
 
-                // Bounds Checking with Bounce/Damping
-                if (currentIndex < 0) {
-                    currentIndex = 0;
-                    velocity = -velocity * 0.5; // Bounce
-                }
-                if (currentIndex > currentDeck.length - 1) {
-                    currentIndex = currentDeck.length - 1;
-                    velocity = -velocity * 0.5; // Bounce
+                    // Bounds Checking with Bounce/Damping
+                    if (currentIndex < 0) {
+                        currentIndex = 0;
+                        velocity = -velocity * 0.5; // Bounce
+                    }
+                    if (currentIndex > currentDeck.length - 1) {
+                        currentIndex = currentDeck.length - 1;
+                        velocity = -velocity * 0.5; // Bounce
+                    }
                 }
                 
                 updateCardPositions();
@@ -1636,7 +1826,11 @@
                                 const json = JSON.parse(jsonStr);
                                 if (json.choices && json.choices[0].delta.content) {
                                     fullText += json.choices[0].delta.content;
-                                    content.innerHTML = marked.parse(fullText);
+                                    if (window.marked && typeof window.marked.parse === 'function') {
+                                        content.innerHTML = window.marked.parse(fullText);
+                                    } else {
+                                        content.textContent = fullText;
+                                    }
                                 }
                             } catch (e) {
                                 // console.error("Error parsing stream:", e);
@@ -1710,6 +1904,14 @@
         });
 
         function startGame() {
+            if (assetsFailed) {
+                preloadDeckAssets();
+                return;
+            }
+            if (!assetsReady) {
+                updateIdleStatus();
+                return;
+            }
             document.getElementById('start-btn').style.display = 'none';
             document.getElementById('status-text').innerText = "命运之轮开始转动...";
             
@@ -1732,10 +1934,14 @@
                 await camera.start();
                 
                 // Camera success
+                cameraReady = true;
+                cameraError = false;
                 document.getElementById('start-btn').style.display = 'none';
-                document.getElementById('status-text').innerText = "张开你的五指开始";
+                updateIdleStatus();
              } catch (e) {
                 console.error(e);
+                cameraReady = false;
+                cameraError = true;
                 document.getElementById('status-text').innerText = "需要摄像头权限以进行手势控制";
                 const btn = document.getElementById('start-btn');
                 btn.style.display = 'block';
@@ -1747,6 +1953,7 @@
         }
         
         // Auto-start camera on load
+        preloadDeckAssets();
         initCameraFlow();
 
         // Initialize Background
