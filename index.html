@@ -668,6 +668,18 @@
             backdrop-filter: blur(5px);
         }
 
+        #name-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.9);
+            z-index: 4000;
+            backdrop-filter: blur(8px);
+        }
+
         .settings-content {
             background: #111;
             border: 2px solid var(--accent-gold);
@@ -792,6 +804,16 @@
         <div style="text-align: center; margin-top: 30px;">
             <button class="btn"
                 onclick="document.getElementById('interpretation-modal').style.display='none'">关闭</button>
+        </div>
+    </div>
+
+    <!-- Name Input Modal -->
+    <div id="name-modal">
+        <div class="settings-content">
+            <h2 style="color: var(--accent-gold);">契约之名</h2>
+            <p>请留下您在命运之册上的称号...</p>
+            <input type="text" id="player-name-input" placeholder="请输入您的名字" maxlength="10">
+            <button id="save-name-btn" class="btn">开启命运</button>
         </div>
     </div>
 
@@ -971,6 +993,9 @@
         let currentIndex = 0;   // Current float index (physics object)
         let velocity = 0;       // Current scroll velocity
         let isDragging = false; // Is the user actively moving?
+
+        let isAILoading = false;
+        let playerName = localStorage.getItem('player_name') || '探求者';
 
         // --- 3. 3D Scene & Rendering ---
         const scene = document.getElementById('scene');
@@ -1407,7 +1432,7 @@
                 const progressContainer = document.getElementById('charge-progress-container');
                 const progressBar = document.getElementById('charge-progress-bar');
 
-                if (isOpenPalm(handLandmarks)) {
+                if (isOpenPalm(handLandmarks) && !isAILoading) {
                     if (!isPalmHeld) {
                         isPalmHeld = true;
                         palmHoldStart = Date.now();
@@ -1818,9 +1843,16 @@
 
         // --- 6. AI Integration ---
         async function getAIInterpretation(token) {
+            // Prevent redundant triggers if already loading
+            if (isAILoading) {
+                return;
+            }
+
+            isAILoading = true;
             document.getElementById('loading-spinner').style.display = 'block';
 
             const prompt = `你是一位【新年限定的塔罗解读官】，
+                            你好，我的名字是 ${playerName}。
                             融合塔罗象征学、心理学直觉与现实生活洞察，
                             不是严肃神秘的算命师，而是一个
                             ——懂隐喻、会吐槽、但永远站在用户这边的聪明朋友。
@@ -1986,6 +2018,7 @@
                 content.innerHTML += `<p style="color:red">连接中断: ${e.message}</p>`;
                 // showSimpleMeaning(); // Optional fallback
             } finally {
+                isAILoading = false;
                 document.getElementById('loading-spinner').style.display = 'none';
             }
         }
@@ -2097,6 +2130,36 @@
 
         // Initialize Background
         initStars();
+
+        // Name Modal Logic
+        const nameModal = document.getElementById('name-modal');
+        const saveNameBtn = document.getElementById('save-name-btn');
+        const playerNameInput = document.getElementById('player-name-input');
+
+        function showNameModal() {
+            if (localStorage.getItem('player_name')) {
+                playerNameInput.value = localStorage.getItem('player_name');
+            }
+            nameModal.style.display = 'block';
+        }
+
+        saveNameBtn.addEventListener('click', () => {
+            const name = playerNameInput.value.trim();
+            if (name) {
+                playerName = name;
+                localStorage.setItem('player_name', name);
+                nameModal.style.display = 'none';
+                // Trigger camera flow after name is set if not already done
+                if (!cameraReady && !cameraError) {
+                    initCameraFlow();
+                }
+            } else {
+                alert("请输入您的名字，以便命运之声能呼唤您。");
+            }
+        });
+
+        // Show name modal on start
+        showNameModal();
 
         // Keyboard fallback for testing
         window.addEventListener('keydown', (e) => {
